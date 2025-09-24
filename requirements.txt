@@ -1,3 +1,6 @@
 flask
 gunicorn
-werkzeug
+sqlalchemy
+psycopg2-binary
+
+
