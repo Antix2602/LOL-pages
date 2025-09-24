@@ -4,8 +4,12 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("LOL_PAGE_SECRET") or "zmien_to_na_coś_bezpiecznego"
-DB = os.environ.get("DB_PATH") or "/var/data/app.db"
+app.secret_key = os.environ.get("LOL_PAGE_SECRET") or "765656597567tytftf46745796hjjuyh8878"
+
+
+DB_DIR = "/var/data"
+os.makedirs(DB_DIR, exist_ok=True)
+DB = os.path.join(DB_DIR, "app.db")
 
 BAD_WORDS = {"kurwa","chuj","pierdole","jebany","debil","suka","idiota"}
 
@@ -537,6 +541,7 @@ def search():
 if __name__ == "__main__":
     init_db()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+
 
 
 
