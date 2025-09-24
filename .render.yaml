@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: lol-page
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app"
+    disk:
+      name: db-disk
+      mountPath: /var/data
+      sizeGB: 1
