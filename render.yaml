@@ -6,6 +6,8 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
+      - key: SECRET_KEY
+        generateValue: true
       - key: DATABASE_URL
         fromDatabase:
           name: lol-page-db
@@ -14,5 +16,6 @@ services:
 databases:
   - name: lol-page-db
     plan: free
+
 
 
