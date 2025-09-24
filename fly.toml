@@ -1,6 +1,6 @@
 app = "lol-pages"
-primary_region = "waw"
 fly volumes create dbdata --size 1 --region waw
+
 
 
 [build]
