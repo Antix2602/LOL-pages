@@ -6,9 +6,10 @@ app = Flask(__name__)
 app.secret_key = "supersecret"
 
 # Baza danych w Render
-DB_DIR = "/var/data"
+DB_DIR = os.path.join(os.getcwd(), "data")
 os.makedirs(DB_DIR, exist_ok=True)
 DB = os.path.join(DB_DIR, "app.db")
+
 
 # ---- DB helpers ----
 def get_conn():
@@ -251,6 +252,7 @@ def logout():
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
