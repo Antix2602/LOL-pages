@@ -1,257 +1,261 @@
 import os
 import sqlite3
-from flask import Flask, render_template_string, request, redirect, session, url_for
+from flask import Flask, request, session, redirect, url_for, render_template_string, g
 
 app = Flask(__name__)
-app.secret_key = "supersecret"
+app.secret_key = "supersekret"
 
-# Baza danych w Render
-DB_DIR = os.path.join(os.getcwd(), "data")
-os.makedirs(DB_DIR, exist_ok=True)
-DB = os.path.join(DB_DIR, "app.db")
+DB_PATH = os.getenv("DB_PATH", "/data/app.db")
 
+# ===================== Baza =====================
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row
+    return g.db
 
-# ---- DB helpers ----
-def get_conn():
-    return sqlite3.connect(DB, check_same_thread=False)
+@app.teardown_appcontext
+def close_db(exception):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
 
 def init_db():
-    con = get_conn()
-    cur = con.cursor()
+    db = get_db()
+    db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT,
+            role TEXT CHECK(role IN ('student','teacher','guest')) NOT NULL
+        );
 
-    # Użytkownicy (wszyscy: normalni, nauczyciele, uczniowie)
-    cur.execute("""CREATE TABLE IF NOT EXISTS users(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE,
-        password TEXT,
-        role TEXT, -- admin, teacher, student, user
-        school_id INTEGER
-    )""")
+        CREATE TABLE IF NOT EXISTS spotted (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT,
+            user_id INTEGER,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
 
-    # Szkoły
-    cur.execute("""CREATE TABLE IF NOT EXISTS schools(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        student_limit INTEGER
-    )""")
+        CREATE TABLE IF NOT EXISTS threads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
 
-    # Forum publiczne
-    cur.execute("""CREATE TABLE IF NOT EXISTS threads(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT,
-        author_id INTEGER
-    )""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS posts(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        thread_id INTEGER,
-        content TEXT,
-        author_id INTEGER
-    )""")
+        CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id INTEGER,
+            content TEXT,
+            user_id INTEGER,
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(thread_id) REFERENCES threads(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        """
+    )
+    db.commit()
 
-    # Spotted (szkoły)
-    cur.execute("""CREATE TABLE IF NOT EXISTS spotteds(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        school_id INTEGER,
-        content TEXT,
-        author_id INTEGER
-    )""")
+@app.before_request
+def before_request():
+    init_db()
 
-    con.commit()
-    con.close()
+# ===================== Widoki =====================
 
-init_db()
-
-# ---- Filtr brzydkich słów ----
-BAD_WORDS = ["brzydkie", "kurde", "głupi"]
-
-def filter_content(text):
-    for w in BAD_WORDS:
-        if w in text.lower():
-            return "Treść nie jest ładna"
-    return text
-
-# ---- Szablon HTML ----
 TEMPLATE = """
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
-    <title>LOL Page</title>
-    <style>
-        body { background:#121212; color:white; font-family:sans-serif; margin:0; }
-        .navbar { background:#222; padding:15px; text-align:center; }
-        .navbar a { color:white; margin:0 10px; text-decoration:none; }
-        h1, h2, h3 { text-align:center; }
-        .container { width:80%%; margin:auto; padding:20px; }
-        input, textarea, select { width:100%%; padding:10px; margin:5px 0; background:#333; color:white; border:none; }
-        button { padding:10px 20px; background:#444; color:white; border:none; cursor:pointer; }
-        .post, .thread, .spotted { background:#1e1e1e; padding:10px; margin:10px 0; border-radius:8px; }
-    </style>
+  <title>LOL Page</title>
+  <style>
+    body { font-family: Arial; background: #f2f2f2; margin:0; }
+    .navbar { background:#222; color:white; padding:10px; text-align:center; }
+    .container { width:80%%; margin:20px auto; background:white; padding:20px; border-radius:10px; }
+    .post { border-bottom:1px solid #ccc; padding:5px; }
+    .admin { color:red; font-weight:bold; }
+  </style>
 </head>
 <body>
-    <div class="navbar">
-        <a href="/">LOL Page</a>
-        <a href="/schools">LOL Page for Schools</a>
-        {% if not session.get('user') %}
-            <a href="/login">Login</a>
-            <a href="/register">Register</a>
-        {% else %}
-            <span>👤 {{session['user']['username']}} ({{session['user']['role']}})</span>
-            <a href="/logout">Logout</a>
-        {% endif %}
-    </div>
-    <div class="container">
-        {% block content %}{% endblock %}
-    </div>
+  <div class="navbar">
+    <a href="{{ url_for('index') }}" style="color:white; margin:10px;">Home</a>
+    <a href="{{ url_for('forum') }}" style="color:white; margin:10px;">Forum</a>
+    {% if session.get('role') in ['student','teacher'] %}
+      <a href="{{ url_for('spotted_page') }}" style="color:white; margin:10px;">Spotted</a>
+    {% endif %}
+    {% if session.get('user_id') %}
+      <span style="margin-left:20px;">Zalogowany jako: {{ session.get('username') }} ({{ session.get('role') }})</span>
+      <a href="{{ url_for('logout') }}" style="color:white; margin-left:20px;">Wyloguj</a>
+    {% else %}
+      <a href="{{ url_for('login') }}" style="color:white; margin:10px;">Logowanie</a>
+    {% endif %}
+  </div>
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
 </body>
 </html>
 """
 
-# ---- Routing ----
-
 @app.route("/")
 def index():
-    con = get_conn()
-    cur = con.cursor()
-    cur.execute("SELECT t.id, t.title, u.username FROM threads t LEFT JOIN users u ON u.id=t.author_id")
-    threads = cur.fetchall()
-    con.close()
-    return render_template_string(TEMPLATE + """
-    {% block content %}
-    <h1>LOL Page (Forum Publiczne)</h1>
-    <form method="post" action="/thread">
-        <input name="title" placeholder="Nowy wątek" required>
-        <button type="submit">Dodaj</button>
-    </form>
-    {% for t in threads %}
-        <div class="thread">
-            <a href="/thread/{{t[0]}}"><b>{{t[1]}}</b></a><br>
-            <small>Author: {{t[2]}}</small>
-        </div>
-    {% endfor %}
-    {% endblock %}
-    """, threads=threads)
+    return render_template_string(
+        TEMPLATE + """
+        {% block content %}
+        <h2>Witaj na LOL Page 🚀</h2>
+        <p>To forum i spotted dla uczniów i nauczycieli.</p>
+        {% endblock %}
+        """
+    )
 
-@app.route("/thread", methods=["POST"])
-def new_thread():
-    if not session.get("user"): return redirect("/login")
-    title = request.form["title"]
-    con = get_conn(); cur = con.cursor()
-    cur.execute("INSERT INTO threads(title,author_id) VALUES(?,?)", (title, session["user"]["id"]))
-    con.commit(); con.close()
-    return redirect("/")
-
-@app.route("/thread/<int:tid>", methods=["GET","POST"])
-def view_thread(tid):
-    if request.method=="POST":
-        if not session.get("user"): return redirect("/login")
-        content = filter_content(request.form["content"])
-        con = get_conn(); cur = con.cursor()
-        cur.execute("INSERT INTO posts(thread_id,content,author_id) VALUES(?,?,?)",
-                    (tid, content, session["user"]["id"]))
-        con.commit(); con.close()
-    con = get_conn(); cur = con.cursor()
-    cur.execute("SELECT title FROM threads WHERE id=?", (tid,))
-    t = cur.fetchone()
-    cur.execute("SELECT p.content,u.username FROM posts p LEFT JOIN users u ON u.id=p.author_id WHERE thread_id=?", (tid,))
-    posts = cur.fetchall()
-    con.close()
-    return render_template_string(TEMPLATE + """
-    {% block content %}
-    <h2>{{t[0]}}</h2>
-    <form method="post">
-        <textarea name="content" placeholder="Napisz coś"></textarea>
-        <button type="submit">Dodaj</button>
-    </form>
-    {% for p in posts %}
-        <div class="post">{{p[0]}}<br><small>Author: {{p[1]}}</small></div>
-    {% endfor %}
-    {% endblock %}
-    """, t=t, posts=posts)
-
-# ---- Schools / Spotted ----
-@app.route("/schools")
-def schools():
-    if not session.get("user"): return redirect("/login")
-    if session["user"]["role"] not in ("teacher","student"): return "Brak dostępu"
-    con = get_conn(); cur = con.cursor()
-    cur.execute("SELECT s.id,s.name FROM schools s JOIN users u ON u.school_id=s.id WHERE u.id=?",(session["user"]["id"],))
-    school = cur.fetchone()
-    cur.execute("SELECT sp.content,u.username FROM spotteds sp LEFT JOIN users u ON u.id=sp.author_id WHERE sp.school_id=?",(school[0],))
-    spotteds = cur.fetchall()
-    con.close()
-    return render_template_string(TEMPLATE + """
-    {% block content %}
-    <h1>LOL Page for Schools - {{school[1]}}</h1>
-    <form method="post" action="/spotted">
-        <textarea name="content" placeholder="Nowy spotted"></textarea>
-        <button type="submit">Dodaj</button>
-    </form>
-    {% for s in spotteds %}
-        <div class="spotted">{{s[0]}}<br><small>Author: {{s[1]}}</small></div>
-    {% endfor %}
-    {% endblock %}
-    """, school=school, spotteds=spotteds)
-
-@app.route("/spotted", methods=["POST"])
-def add_spotted():
-    if not session.get("user"): return redirect("/login")
-    if session["user"]["role"] not in ("teacher","student"): return "Brak dostępu"
-    content = filter_content(request.form["content"])
-    con = get_conn(); cur = con.cursor()
-    cur.execute("INSERT INTO spotteds(school_id,content,author_id) VALUES(?,?,?)",
-                (session["user"]["school_id"], content, session["user"]["id"]))
-    con.commit(); con.close()
-    return redirect("/schools")
-
-# ---- Register/Login ----
-@app.route("/register", methods=["GET","POST"])
-def register():
-    if request.method=="POST":
-        u,p = request.form["username"], request.form["password"]
-        con = get_conn(); cur = con.cursor()
-        cur.execute("INSERT INTO users(username,password,role) VALUES(?,?,?)",(u,p,"user"))
-        con.commit(); con.close()
-        return redirect("/login")
-    return render_template_string(TEMPLATE + """
-    {% block content %}
-    <h1>Register</h1>
-    <form method="post">
-        <input name="username" placeholder="Username">
-        <input type="password" name="password" placeholder="Password">
-        <button>Register</button>
-    </form>
-    {% endblock %}
-    """)
-
-@app.route("/login", methods=["GET","POST"])
+# -------- Logowanie --------
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method=="POST":
-        u,p = request.form["username"], request.form["password"]
-        con = get_conn(); cur = con.cursor()
-        cur.execute("SELECT id,username,password,role,school_id FROM users WHERE username=?",(u,))
-        row = cur.fetchone(); con.close()
-        if row and row[2]==p:
-            session["user"]={"id":row[0],"username":row[1],"role":row[3],"school_id":row[4]}
-            return redirect("/")
-        return "Błędny login lub hasło"
-    return render_template_string(TEMPLATE + """
-    {% block content %}
-    <h1>Login</h1>
-    <form method="post">
-        <input name="username" placeholder="Username">
-        <input type="password" name="password" placeholder="Password">
-        <button>Login</button>
-    </form>
-    {% endblock %}
-    """)
+    if request.method == "POST":
+        db = get_db()
+        user = db.execute(
+            "SELECT * FROM users WHERE username=? AND password=?",
+            (request.form["username"], request.form["password"]),
+        ).fetchone()
+        if user:
+            session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            session["role"] = user["role"]
+            return redirect(url_for("index"))
+        return "Błędne dane!"
+    return render_template_string(
+        TEMPLATE + """
+        {% block content %}
+        <h2>Logowanie</h2>
+        <form method="post">
+          <input name="username" placeholder="Login"><br>
+          <input name="password" placeholder="Hasło" type="password"><br>
+          <button>Zaloguj</button>
+        </form>
+        {% endblock %}
+        """
+    )
 
 @app.route("/logout")
 def logout():
-    session.pop("user",None)
-    return redirect("/")
+    session.clear()
+    return redirect(url_for("index"))
 
-if __name__=="__main__":
-    app.run(host="0.0.0.0", port=5000)
+# -------- Spotted --------
+@app.route("/spotted", methods=["GET", "POST"])
+def spotted_page():
+    if session.get("role") not in ["student", "teacher"]:
+        return "Dostęp tylko dla uczniów i nauczycieli!", 403
+
+    db = get_db()
+    if request.method == "POST":
+        db.execute(
+            "INSERT INTO spotted (content, user_id) VALUES (?, ?)",
+            (request.form["content"], session["user_id"]),
+        )
+        db.commit()
+        return redirect(url_for("spotted_page"))
+
+    spotteds = db.execute(
+        "SELECT s.*, u.username FROM spotted s LEFT JOIN users u ON s.user_id=u.id ORDER BY s.created DESC"
+    ).fetchall()
+    return render_template_string(
+        TEMPLATE + """
+        {% block content %}
+        <h2>Spotted</h2>
+        <form method="post">
+          <textarea name="content" placeholder="Twoje spotted"></textarea><br>
+          <button>Dodaj</button>
+        </form>
+        <hr>
+        {% for s in spotteds %}
+          <div class="post">
+            <b>{{ s['username'] }}</b>: {{ s['content'] }}
+            {% if session.get('role') == 'teacher' %}
+              <a href="{{ url_for('delete_spotted', spotted_id=s['id']) }}">[usuń]</a>
+            {% endif %}
+          </div>
+        {% endfor %}
+        {% endblock %}
+        """,
+        spotteds=spotteds,
+    )
+
+@app.route("/spotted/delete/<int:spotted_id>")
+def delete_spotted(spotted_id):
+    if session.get("role") != "teacher":
+        return "Tylko nauczyciel może usuwać!", 403
+    db = get_db()
+    db.execute("DELETE FROM spotted WHERE id=?", (spotted_id,))
+    db.commit()
+    return redirect(url_for("spotted_page"))
+
+# -------- Forum --------
+@app.route("/forum", methods=["GET", "POST"])
+def forum():
+    db = get_db()
+    if request.method == "POST":
+        db.execute("INSERT INTO threads (title) VALUES (?)", (request.form["title"],))
+        db.commit()
+        return redirect(url_for("forum"))
+
+    threads = db.execute("SELECT * FROM threads ORDER BY created DESC").fetchall()
+    return render_template_string(
+        TEMPLATE + """
+        {% block content %}
+        <h2>Forum</h2>
+        <form method="post">
+          <input name="title" placeholder="Tytuł wątku">
+          <button>Dodaj wątek</button>
+        </form>
+        <hr>
+        {% for t in threads %}
+          <div><a href="{{ url_for('thread', thread_id=t['id']) }}">{{ t['title'] }}</a></div>
+        {% endfor %}
+        {% endblock %}
+        """,
+        threads=threads,
+    )
+
+@app.route("/forum/<int:thread_id>", methods=["GET", "POST"])
+def thread(thread_id):
+    db = get_db()
+    if request.method == "POST":
+        db.execute(
+            "INSERT INTO posts (thread_id, content, user_id) VALUES (?, ?, ?)",
+            (thread_id, request.form["content"], session.get("user_id")),
+        )
+        db.commit()
+        return redirect(url_for("thread", thread_id=thread_id))
+
+    thread = db.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
+    posts = db.execute(
+        "SELECT p.*, u.username FROM posts p LEFT JOIN users u ON p.user_id=u.id WHERE thread_id=? ORDER BY created",
+        (thread_id,),
+    ).fetchall()
+    return render_template_string(
+        TEMPLATE + """
+        {% block content %}
+        <h2>{{ thread['title'] }}</h2>
+        <form method="post">
+          <textarea name="content" placeholder="Treść posta"></textarea><br>
+          <button>Dodaj post</button>
+        </form>
+        <hr>
+        {% for p in posts %}
+          <div class="post"><b>{{ p['username'] }}</b>: {{ p['content'] }}</div>
+        {% endfor %}
+        {% endblock %}
+        """,
+        thread=thread,
+        posts=posts,
+    )
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
+
+
 
 
 
