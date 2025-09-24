@@ -1,5 +1,7 @@
 app = "lol-pages"
 primary_region = "waw"
+fly volumes create dbdata --size 1 --region waw
+
 
 [build]
   builder = "paketobuildpacks/builder:base"
@@ -17,6 +19,9 @@ primary_region = "waw"
 [[mounts]]
   source = "dbdata"
   destination = "/data"
+
+
+
 
 
 
